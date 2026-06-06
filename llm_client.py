@@ -31,14 +31,16 @@ def _chat(base_url, model, messages, temperature=0.0, max_tokens=1024):
     return resp.json()["choices"][0]["message"]["content"], latency
 
 
-def vl_extract(image_bytes, prompt):
+def vl_extract(image_bytes, prompt, base_url=None, model=None):
+    """画像+プロンプト → テキスト。base_url/model 省略時は既定VL（LFM）を使う。
+    エンジン切替（LFM⇄Qwen）のため、呼び出し側でエンドポイントを上書きできる。"""
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     data_uri = f"data:image/png;base64,{b64}"
     messages = [{"role": "user", "content": [
         {"type": "text", "text": prompt},
         {"type": "image_url", "image_url": {"url": data_uri}},
     ]}]
-    return _chat(VL_BASE_URL, VL_MODEL, messages, temperature=0.0)
+    return _chat(base_url or VL_BASE_URL, model or VL_MODEL, messages, temperature=0.0)
 
 
 def jp_generate(system, user):

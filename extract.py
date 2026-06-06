@@ -109,6 +109,27 @@ def _parse_prompt(ocr_text: str, strict: bool = False) -> str:
     return p
 
 
+def _parse_ocr_text(ocr_text: str, t_ocr: float):
+    """OCRテキスト（VLでも専用OCRでも可）→ Liquid テキストモデルで8項目に構造化。"""
+    parsed_json, t_parse = jp_generate(PARSE_SYSTEM, _parse_prompt(ocr_text))
+    try:
+        return parse_extraction(parsed_json), t_ocr + t_parse
+    except (ValueError, json.JSONDecodeError):
+        parsed2, t2 = jp_generate(PARSE_SYSTEM, _parse_prompt(ocr_text, strict=True))
+        try:
+            return parse_extraction(parsed2), t_ocr + t_parse + t2
+        except (ValueError, json.JSONDecodeError):
+            return normalize_schema({}), t_ocr + t_parse + t2
+
+
+def ocr_engine_then_parse(image_bytes: bytes):
+    """専用OCR(EasyOCR)で行構造テキスト → Liquid テキストモデルで項目抽出。
+    VLが苦手な実物の密な決算短信向け。OCR=画素読み、Liquid=言語理解 の分業。"""
+    from ocr_engine import ocr_rows
+    ocr_text, t_ocr = ocr_rows(image_bytes)
+    return _parse_ocr_text(ocr_text, t_ocr)
+
+
 def ocr_then_parse(image_bytes: bytes):
     """VLで素のOCR → テキストモデルで項目抽出。実物の複雑な決算短信に強い。"""
     ocr_text, t_ocr = vl_extract(image_bytes, OCR_PROMPT)
@@ -118,20 +139,43 @@ def ocr_then_parse(image_bytes: bytes):
     except (ValueError, json.JSONDecodeError):
         # 抽出側がJSONを崩したら、もう一度だけJSON厳守で再依頼
         parsed2, t2 = jp_generate(PARSE_SYSTEM, _parse_prompt(ocr_text, strict=True))
-        return parse_extraction(parsed2), t_ocr + t_parse + t2
+        try:
+            return parse_extraction(parsed2), t_ocr + t_parse + t2
+        except (ValueError, json.JSONDecodeError):
+            return normalize_schema({}), t_ocr + t_parse + t2
 
 
-@op()
-def extract_financials(image_bytes: bytes):
-    """決算書画像 → 構造化JSON。EXTRACT_MODE=2stage なら OCR→テキスト抽出方式を使う。
-    既定(direct)は VL に直接スキーマ充填させ、パース失敗時は1回だけ修復リトライ。"""
-    if os.environ.get("EXTRACT_MODE", "direct").lower() == "2stage":
-        return ocr_then_parse(image_bytes)
+# Qwen-7B（ローカル・実物の密な表に強い）エンドポイント。オラクル兼「複雑文書」エンジン。
+QWEN_BASE_URL = os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:8082/v1")
+QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen2.5-vl")
 
-    raw, latency = vl_extract(image_bytes, EXTRACT_PROMPT)
+
+def _direct_vl(image_bytes, base_url=None, model=None):
+    """VLに直接スキーマ充填させる。崩れたら1回修復、それでも駄目なら全null（落とさない）。"""
+    raw, latency = vl_extract(image_bytes, EXTRACT_PROMPT, base_url, model)
     try:
         return parse_extraction(raw), latency
     except (ValueError, json.JSONDecodeError):
-        raw2, latency2 = vl_extract(image_bytes, REPAIR_PROMPT)
-        # 再試行も失敗すれば元の例外を伝播させる（呼び出し側で扱う）
-        return parse_extraction(raw2), latency + latency2
+        raw2, latency2 = vl_extract(image_bytes, REPAIR_PROMPT, base_url, model)
+        try:
+            return parse_extraction(raw2), latency + latency2
+        except (ValueError, json.JSONDecodeError):
+            return normalize_schema({}), latency + latency2
+
+
+@op()
+def extract_financials(image_bytes: bytes, engine: str = None):
+    """決算書画像 → 構造化JSON。抽出エンジンを選べる:
+      liquid_vl     : LFM2.5-VL に直接抽出（既定・高速・単純帳票向け）
+      qwen_vl       : ローカルQwen-7B に直接抽出（実物の密な決算短信を読める）
+      ocr           : 専用OCR(EasyOCR) → Liquid テキストモデルで項目抽出
+      liquid_2stage : LFM-VLで素OCR → Liquid テキスト抽出
+    どのエンジンでも後段（指標・格付け・所見）は Liquid が担う。"""
+    engine = (engine or os.environ.get("EXTRACT_ENGINE", "liquid_vl")).lower()
+    if engine == "ocr":
+        return ocr_engine_then_parse(image_bytes)
+    if engine == "qwen_vl":
+        return _direct_vl(image_bytes, QWEN_BASE_URL, QWEN_MODEL)
+    if engine == "liquid_2stage":
+        return ocr_then_parse(image_bytes)
+    return _direct_vl(image_bytes)  # liquid_vl（既定）

@@ -154,22 +154,52 @@ def _financials_html(data: dict, ratios: dict) -> str:
 </div>"""
 
 
-def run(file_path):
-    empty = ("", "", "", "", "Upload a financial statement to begin.", "")
-    if not file_path:
-        return empty
-    img_bytes = _to_png_bytes(file_path)
-    data, t_extract = extract_financials(img_bytes)
-    memo, t_summary, ratios, grade, warnings = risk_summary(data)
+def _error_card(msg: str) -> str:
+    return (f"<div style='border:1px solid #dc2626;background:#fef2f2;border-radius:12px;"
+            f"padding:14px 16px'><div style='color:#b91c1c;font-weight:700'>"
+            f"⚠ Could not process this document</div>"
+            f"<div style='color:#991b1b;font-size:13px;margin-top:4px'>{msg}</div></div>")
 
-    return (
-        _security_html(is_local_only(), t_extract, t_summary),
-        _rating_html(grade),
-        _alerts_html(warnings),
-        _financials_html(data, ratios),
-        memo,
-        json.dumps({"extracted": data, "ratios": ratios}, ensure_ascii=False, indent=2),
-    )
+
+_NO_FIGURES = (
+    "<div style='border:1px solid #d97706;background:#fffbeb;border-radius:12px;padding:14px 16px'>"
+    "<div style='color:#b45309;font-weight:700'>⚠ No figures extracted</div>"
+    "<div style='color:#92400e;font-size:13px;margin-top:4px'>"
+    "The on-device 1.6B model couldn't read this layout (dense multi-column statement). "
+    "This is the known capability gap — the fine-tune targets exactly these documents. "
+    "Try the sample or a single-table statement.</div></div>")
+
+
+# UIラベル → 抽出エンジン
+ENGINE_MAP = {
+    "Liquid VL · 1.6B (on-device, fast)": "liquid_vl",
+    "Qwen-7B · local (reads complex docs)": "qwen_vl",
+    "OCR + Liquid (EasyOCR)": "ocr",
+}
+
+
+def run(file_path, engine_label):
+    if not file_path:
+        return ("", "", "", "", "Upload a financial statement to begin.", "")
+    engine = ENGINE_MAP.get(engine_label, "liquid_vl")
+    try:
+        img_bytes = _to_png_bytes(file_path)
+        data, t_extract = extract_financials(img_bytes, engine)
+        memo, t_summary, ratios, grade, warnings = risk_summary(data)
+    except Exception as e:
+        # モデルサーバ断・描画失敗など、何が起きてもUIは落とさない（デモ保護）
+        return (_error_card(f"{type(e).__name__}: {e}"), "", "", "",
+                "Processing failed — see the message on the left.", "")
+
+    json_str = json.dumps({"extracted": data, "ratios": ratios},
+                          ensure_ascii=False, indent=2)
+    security = _security_html(is_local_only(), t_extract, t_summary)
+    # 抽出が全滅 = 実機VLがこの実文書を読めなかった。クラッシュではなく明示する。
+    if all(data.get(k) is None for k in FIELD_EN):
+        return (security, _NO_FIGURES, "", _financials_html(data, ratios), memo, json_str)
+
+    return (security, _rating_html(grade), _alerts_html(warnings),
+            _financials_html(data, ratios), memo, json_str)
 
 
 def load_sample():
@@ -193,13 +223,19 @@ FOOTER = """
 
 THEME = gr.themes.Soft(primary_hue="indigo", neutral_hue="slate")
 
-with gr.Blocks(theme=THEME, title="NeoBank AI — Credit Underwriting") as demo:
+with gr.Blocks(title="NeoBank AI — Credit Underwriting") as demo:
     gr.HTML(HEADER)
     with gr.Row():
         with gr.Column(scale=4):
             gr.Markdown("#### 1 · Upload statement")
             f = gr.File(label="Financial statement (image or PDF)",
                         file_types=[".png", ".jpg", ".jpeg", ".pdf"], type="filepath")
+            engine = gr.Radio(
+                choices=list(ENGINE_MAP.keys()),
+                value="Liquid VL · 1.6B (on-device, fast)",
+                label="Extraction engine",
+                info="Liquid VL = small & fast (simple docs). Qwen-7B = local, reads dense real 短信. "
+                     "All on-device; downstream analysis is always Liquid.")
             with gr.Row():
                 btn = gr.Button("Generate credit memo", variant="primary", scale=2)
                 sample_btn = gr.Button("Try sample", scale=1)
@@ -215,8 +251,8 @@ with gr.Blocks(theme=THEME, title="NeoBank AI — Credit Underwriting") as demo:
     gr.HTML(FOOTER)
 
     outputs = [security_out, rating_out, alerts_out, financials_out, memo_out, json_out]
-    btn.click(run, inputs=f, outputs=outputs)
+    btn.click(run, inputs=[f, engine], outputs=outputs)
     sample_btn.click(load_sample, outputs=f)
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(theme=THEME)
