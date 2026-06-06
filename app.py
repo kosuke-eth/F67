@@ -1,8 +1,10 @@
-"""NeoBank AI — オンプレ融資稟議アシスタント（Gradio デモUI）
-決算書（画像 / PDF）を入れる → 端末内LFMで抽出 → 与信所見を生成。
-すべてオンデバイス、外部ネットワーク通信なし。
+"""NeoBank AI — On-Premise Credit Underwriting Assistant (Gradio UI).
 
-起動: python app.py  →  http://localhost:7860
+Drop in a financial statement (image / PDF) → on-device LFM extracts the figures →
+deterministic engine computes ratios, a provisional rating, and audit checks →
+on-device JP model drafts the credit opinion. Nothing leaves the machine.
+
+Run:  python app.py  →  http://localhost:7860
 """
 import io
 import json
@@ -20,12 +22,28 @@ from make_sample import make_sample
 
 tracing.init(os.environ.get("WEAVE_PROJECT", "neobank-ai"))
 
+# --- English labels alongside the Japanese source fields (content stays JP) ---
+FIELD_EN = {
+    "売上高": "Net Sales", "営業利益": "Operating Income", "経常利益": "Ordinary Income",
+    "当期純利益": "Net Income", "総資産": "Total Assets", "純資産": "Net Assets",
+    "有利子負債": "Interest-bearing Debt", "現預金": "Cash & Deposits",
+}
+PL_KEYS = ["売上高", "営業利益", "経常利益", "当期純利益"]
+BS_KEYS = ["総資産", "純資産", "有利子負債", "現預金"]
+RATIO_EN = {
+    "自己資本比率(%)": ("Equity Ratio", "%"), "営業利益率(%)": ("Operating Margin", "%"),
+    "経常利益率(%)": ("Ordinary Margin", "%"), "ROE(%)": ("ROE", "%"),
+    "ROA(%)": ("ROA", "%"), "DEレシオ(倍)": ("D/E Ratio", "x"),
+    "ネット有利子負債(百万円)": ("Net Debt", "¥M"),
+}
+GRADE_COLOR = {"A": "#16a34a", "B": "#2563eb", "C": "#d97706",
+               "D": "#dc2626", "判定不能": "#64748b"}
+
 
 def _to_png_bytes(file_path: str) -> bytes:
-    """画像 or PDF（1ページ目）を PNG バイト列に変換。"""
+    """Image or PDF (page 1) → PNG bytes."""
     if file_path.lower().endswith(".pdf"):
-        pdf = pdfium.PdfDocument(file_path)
-        pil = pdf[0].render(scale=2.0).to_pil()
+        pil = pdfium.PdfDocument(file_path)[0].render(scale=2.0).to_pil()
     else:
         pil = Image.open(file_path).convert("RGB")
     buf = io.BytesIO()
@@ -33,55 +51,171 @@ def _to_png_bytes(file_path: str) -> bytes:
     return buf.getvalue()
 
 
-def run(file_path):
-    if not file_path:
-        return "", "（決算書（画像/PDF）をアップロードしてください）", "", ""
-    img_bytes = _to_png_bytes(file_path)
+def _fmt(v):
+    return f"{v:,}" if isinstance(v, (int, float)) else "—"
 
+
+def _security_html(local: bool, t_ext: float, t_sum: float) -> str:
+    if local:
+        return f"""
+<div style="border:1px solid #16a34a;background:#f0fdf4;border-radius:12px;padding:14px 16px">
+  <div style="font-size:15px;font-weight:700;color:#15803d">🔒 Secure — fully on-device</div>
+  <div style="color:#166534;font-size:13px;margin-top:2px">
+    No customer data left this machine. No external API was called.</div>
+  <div style="color:#3f6212;font-size:12px;margin-top:8px;border-top:1px dashed #bbf7d0;padding-top:8px">
+    ⚡ Extract {t_ext:.2f}s &nbsp;·&nbsp; Memo {t_sum:.2f}s &nbsp;·&nbsp;
+    <b>Total {t_ext + t_sum:.2f}s</b> on local hardware</div>
+</div>"""
+    return """
+<div style="border:1px solid #dc2626;background:#fef2f2;border-radius:12px;padding:14px 16px">
+  <div style="font-size:15px;font-weight:700;color:#b91c1c">⚠ External endpoint configured</div>
+  <div style="color:#991b1b;font-size:13px">Data may leave this machine — not for production use.</div>
+</div>"""
+
+
+def _rating_html(grade: dict) -> str:
+    g = grade.get("格付け", "判定不能")
+    score = grade.get("スコア") or "—"
+    color = GRADE_COLOR.get(g, "#64748b")
+    reasons = "".join(
+        f"<li style='margin:2px 0'>{r}</li>" for r in grade.get("根拠", []))
+    label = "Provisional Credit Rating" if g != "判定不能" else "Rating — Insufficient Data"
+    return f"""
+<div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px 16px;background:#fff">
+  <div style="display:flex;align-items:center;gap:14px">
+    <div style="min-width:64px;height:64px;border-radius:12px;background:{color};
+                color:#fff;display:flex;align-items:center;justify-content:center;
+                font-size:32px;font-weight:800">{g if len(g) == 1 else '?'}</div>
+    <div>
+      <div style="font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.05em">{label}</div>
+      <div style="font-size:20px;font-weight:700;color:#0f172a">Grade {g}
+        <span style="font-size:14px;color:#64748b;font-weight:500">· score {score}</span></div>
+    </div>
+  </div>
+  <ul style="margin:10px 0 0;padding-left:18px;color:#475569;font-size:13px">{reasons}</ul>
+  <div style="font-size:11px;color:#94a3b8;margin-top:6px">
+    Computed deterministically (temperature 0) — reproducible for audit.</div>
+</div>"""
+
+
+def _alerts_html(warnings: list) -> str:
+    if not warnings:
+        return """
+<div style="border:1px solid #16a34a;background:#f0fdf4;border-radius:12px;padding:12px 16px">
+  <span style="color:#15803d;font-weight:700">✓ Audit layer passed</span>
+  <span style="color:#166534;font-size:13px"> — no accounting inconsistencies detected.</span>
+</div>"""
+    items = "".join(f"<li style='margin:3px 0'>{w}</li>" for w in warnings)
+    return f"""
+<div style="border:1px solid #dc2626;background:#fef2f2;border-radius:12px;padding:12px 16px">
+  <div style="color:#b91c1c;font-weight:700">⚠ Audit layer flagged possible extraction errors</div>
+  <ul style="margin:6px 0 0;padding-left:18px;color:#991b1b;font-size:13px">{items}</ul>
+  <div style="font-size:11px;color:#b91c1c;margin-top:6px">
+    The deterministic layer caught what the model got wrong — before it reached the officer.</div>
+</div>"""
+
+
+def _financials_html(data: dict, ratios: dict) -> str:
+    def rows(keys):
+        out = ""
+        for k in keys:
+            out += (f"<tr><td style='padding:4px 10px;color:#334155'>{FIELD_EN.get(k, k)}"
+                    f"<span style='color:#94a3b8'> · {k}</span></td>"
+                    f"<td style='padding:4px 10px;text-align:right;font-variant-numeric:tabular-nums;"
+                    f"font-weight:600;color:#0f172a'>{_fmt(data.get(k))}</td></tr>")
+        return out
+
+    ratio_cells = ""
+    for k, (en, unit) in RATIO_EN.items():
+        if k in ratios:
+            ratio_cells += (
+                f"<div style='border:1px solid #e2e8f0;border-radius:8px;padding:6px 10px;background:#f8fafc'>"
+                f"<div style='font-size:11px;color:#64748b'>{en}</div>"
+                f"<div style='font-size:15px;font-weight:700;color:#0f172a'>"
+                f"{_fmt(ratios[k])}<span style='font-size:11px;color:#64748b'> {unit}</span></div></div>")
+
+    return f"""
+<div style="border:1px solid #e2e8f0;border-radius:12px;padding:14px 16px;background:#fff">
+  <div style="font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px">
+    Extracted figures <span style="text-transform:none">(¥ millions)</span></div>
+  <div style="display:flex;gap:18px;flex-wrap:wrap">
+    <table style="flex:1;min-width:230px;border-collapse:collapse;font-size:13px">
+      <tr><td colspan="2" style="padding:2px 10px;font-weight:700;color:#475569">Income Statement</td></tr>
+      {rows(PL_KEYS)}</table>
+    <table style="flex:1;min-width:230px;border-collapse:collapse;font-size:13px">
+      <tr><td colspan="2" style="padding:2px 10px;font-weight:700;color:#475569">Balance Sheet</td></tr>
+      {rows(BS_KEYS)}</table>
+  </div>
+  <div style="font-size:12px;color:#64748b;text-transform:uppercase;letter-spacing:.05em;margin:12px 0 6px">
+    Derived metrics</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:8px">
+    {ratio_cells or "<span style='color:#94a3b8;font-size:13px'>No metrics computed.</span>"}
+  </div>
+</div>"""
+
+
+def run(file_path):
+    empty = ("", "", "", "", "Upload a financial statement to begin.", "")
+    if not file_path:
+        return empty
+    img_bytes = _to_png_bytes(file_path)
     data, t_extract = extract_financials(img_bytes)
     memo, t_summary, ratios, grade, warnings = risk_summary(data)
 
-    extracted = json.dumps({"抽出値": data, "算出指標": ratios},
-                           ensure_ascii=False, indent=2)
-
-    # 暫定格付け＋整合性アラートのバッジ（決定的に算出＝監査可能）
-    badge = f"暫定格付け: {grade.get('格付け')}（{grade.get('スコア')}）"
-    if warnings:
-        badge += "\n⚠️ 整合性アラート:\n" + "\n".join(f"・{w}" for w in warnings)
-    else:
-        badge += "\n✅ 整合性: 特記事項なし"
-
-    net = "🔒 通信: ローカルのみ（外部送信なし）" if is_local_only() else "⚠️ 外部エンドポイント設定中"
-    perf = (f"{net}\n抽出 {t_extract:.2f}s ／ 所見生成 {t_summary:.2f}s ／ "
-            f"合計 {t_extract + t_summary:.2f}s")
-    return extracted, memo, perf, badge
+    return (
+        _security_html(is_local_only(), t_extract, t_summary),
+        _rating_html(grade),
+        _alerts_html(warnings),
+        _financials_html(data, ratios),
+        memo,
+        json.dumps({"extracted": data, "ratios": ratios}, ensure_ascii=False, indent=2),
+    )
 
 
 def load_sample():
     return make_sample()
 
 
-with gr.Blocks(title="NeoBank AI — オンプレ融資稟議アシスタント") as demo:
-    gr.Markdown(
-        "# 🏦 NeoBank AI\n"
-        "### オンプレ融資稟議アシスタント\n"
-        "決算書を入れるだけで、**端末内**で財務数値を抽出し、与信稟議の下書きを生成します。"
-        "顧客の財務データは一切外部に出ません。"
-    )
+HEADER = """
+<div style="padding:6px 2px 2px">
+  <div style="font-size:26px;font-weight:800;color:#0f172a">🏦 NeoBank AI</div>
+  <div style="font-size:15px;color:#334155;font-weight:600">On-Premise Credit Underwriting Assistant</div>
+  <div style="font-size:13px;color:#64748b;margin-top:4px;max-width:760px">
+    Reads a Japanese financial statement and drafts a credit memo <b>entirely on-device</b>.
+    Customer financials never leave the machine — the only architecture a regional bank's
+    compliance desk can approve under APPI &amp; FISC.</div>
+</div>"""
+
+FOOTER = """
+<div style="text-align:center;color:#94a3b8;font-size:12px;margin-top:10px">
+  Powered by Liquid <b>LFM2.5-VL</b> + <b>LFM2.5-JP</b> · on-device via llama.cpp on AMD Ryzen AI
+</div>"""
+
+THEME = gr.themes.Soft(primary_hue="indigo", neutral_hue="slate")
+
+with gr.Blocks(theme=THEME, title="NeoBank AI — Credit Underwriting") as demo:
+    gr.HTML(HEADER)
     with gr.Row():
-        with gr.Column():
-            f = gr.File(label="決算書（画像 or PDF）",
+        with gr.Column(scale=4):
+            gr.Markdown("#### 1 · Upload statement")
+            f = gr.File(label="Financial statement (image or PDF)",
                         file_types=[".png", ".jpg", ".jpeg", ".pdf"], type="filepath")
             with gr.Row():
-                btn = gr.Button("稟議の下書きを作成", variant="primary")
-                sample_btn = gr.Button("サンプルで試す")
-            grade_out = gr.Textbox(label="暫定格付け / データ整合性（決定的算出）", lines=4)
-            perf_out = gr.Textbox(label="オンデバイス性能 / 通信状況", lines=2)
-        with gr.Column():
-            memo_out = gr.Textbox(label="与信所見（下書き）", lines=16)
-            json_out = gr.Code(label="抽出された財務データ", language="json")
+                btn = gr.Button("Generate credit memo", variant="primary", scale=2)
+                sample_btn = gr.Button("Try sample", scale=1)
+            security_out = gr.HTML()
+        with gr.Column(scale=6):
+            gr.Markdown("#### 2 · Analysis")
+            rating_out = gr.HTML()
+            alerts_out = gr.HTML()
+            financials_out = gr.HTML()
+            memo_out = gr.Textbox(label="Credit opinion — draft (Japanese)", lines=14)
+            with gr.Accordion("Raw extracted JSON", open=False):
+                json_out = gr.Code(language="json")
+    gr.HTML(FOOTER)
 
-    btn.click(run, inputs=f, outputs=[json_out, memo_out, perf_out, grade_out])
+    outputs = [security_out, rating_out, alerts_out, financials_out, memo_out, json_out]
+    btn.click(run, inputs=f, outputs=outputs)
     sample_btn.click(load_sample, outputs=f)
 
 if __name__ == "__main__":
