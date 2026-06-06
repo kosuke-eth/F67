@@ -1,7 +1,7 @@
 import io, sys
 import pypdfium2 as pdfium
 from ocr_engine import ocr_rows
-from extract import _parse_ocr_text
+from extract import _parse_ocr_text, _relevant_lines
 
 GOLD = {
     "lifeline": "売上56610 営業12326 経常12335 純利益9317 総資産75123 純資産59914 現預金11014",
@@ -16,7 +16,7 @@ print(f"GOLD: {GOLD.get(name)}")
 text, t_ocr = ocr_rows(buf.getvalue())
 print(f"\n=== OCR rows ({t_ocr:.2f}s) — first 1200 chars ===")
 print(text[:1200])
-data, t = _parse_ocr_text(text, t_ocr)
+data, t = _parse_ocr_text(_relevant_lines(text), t_ocr)
 print(f"\n=== Liquid parsed ({t:.2f}s total) ===")
 for k, v in data.items():
     print(f"  {k}: {v}")

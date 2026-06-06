@@ -134,12 +134,25 @@ def _parse_ocr_text(ocr_text: str, t_ocr: float):
             return normalize_schema({}), t_ocr + t_parse + t2
 
 
+# 抽出に関係する語を含む行だけを残し、小さなパーサが迷うノイズを削る
+_RELEVANT = ("売上", "営業利益", "経常", "純利益", "利益", "資産", "純資産",
+             "負債", "借入", "社債", "現金", "預金", "年", "百万円", "期")
+
+
+def _relevant_lines(text: str) -> str:
+    """OCR全文 → 関連語を含む行のみ（B/S等が長文に埋もれて取りこぼされるのを防ぐ）。"""
+    keep = [ln for ln in text.splitlines()
+            if any(k in ln for k in _RELEVANT) and any(c.isdigit() for c in ln) or
+            any(k in ln for k in ("売上高", "総資産", "純資産", "現金", "経営成績", "財政状態"))]
+    return "\n".join(keep) if keep else text
+
+
 def ocr_engine_then_parse(image_bytes: bytes):
     """専用OCR(EasyOCR)で行構造テキスト → Liquid テキストモデルで項目抽出。
     VLが苦手な実物の密な決算短信向け。OCR=画素読み、Liquid=言語理解 の分業。"""
     from ocr_engine import ocr_rows
     ocr_text, t_ocr = ocr_rows(image_bytes)
-    return _parse_ocr_text(ocr_text, t_ocr)
+    return _parse_ocr_text(_relevant_lines(ocr_text), t_ocr)
 
 
 def ocr_then_parse(image_bytes: bytes):
