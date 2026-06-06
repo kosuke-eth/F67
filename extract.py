@@ -1,8 +1,15 @@
-"""決算書の画像 → 主要財務項目の構造化JSON。LFM2.5-VL-1.6B を抽出専用プロンプトで拘束して使う。"""
+"""決算書の画像 → 主要財務項目の構造化JSON。
+
+2つの抽出方式を持つ（EXTRACT_MODE で切替）:
+  direct : VL に画像→スキーマ充填を一気にやらせる（単純な帳票向け・既定）
+  2stage : VL=素のOCR → テキストモデル=項目抽出（複雑な実物の決算短信向け）
+           VLは数字を読めるが表の項目対応が苦手、という実測に基づく分業。
+"""
 import json
+import os
 
 from tracing import op
-from llm_client import vl_extract
+from llm_client import vl_extract, jp_generate
 
 SCHEMA = {
     "決算期": "例: 2025年3月期",
@@ -71,10 +78,56 @@ REPAIR_PROMPT = (
 )
 
 
+# ---- 2段階方式（VL=OCR → テキストモデル=項目抽出）----------------------------
+# Stage1: 素のOCR。スキーマ充填を求めず「見えるものをそのまま書き写す」だけ。
+OCR_PROMPT = (
+    "この決算書の画像の文字と数字を、表の行・列の構造を保ったまま全て正確に書き写してください（OCR）。"
+    "金額の数字は省略せず、各項目名と同じ行に金額を書くこと。"
+    "要約・解釈・推測はせず、画像に見えるものだけを出力してください。"
+)
+
+# Stage2: OCRテキスト → 8項目。テキストモデル（8081）の得意分野に寄せる。
+PARSE_SYSTEM = (
+    "あなたはOCRテキストから財務数値を抽出する専用エンジンです。"
+    "与えられたOCRテキストのみに基づき指定項目を抽出し、JSONだけを出力します。"
+    "前置き・説明・コードブロックは禁止。テキストから判断できない値は null。"
+)
+_PARSE_INSTR = (
+    "以下は決算書をOCRしたテキストです（列ズレやノイズを含むことがあります）。\n"
+    "各項目について『最新期（当期・当事業年度）』の金額を百万円の整数で抽出してください。\n"
+    "増減率(%)・カッコ内の比率・1株当たり金額は『金額』ではないので採用しないこと。\n"
+    "前期と当期が並ぶ場合は当期（通常は新しい年度）の値を採用すること。\n\n"
+)
+_PARSE_SCHEMA = ("【出力】次のスキーマのJSONのみ:\n"
+                 + json.dumps(SCHEMA, ensure_ascii=False, indent=2))
+
+
+def _parse_prompt(ocr_text: str, strict: bool = False) -> str:
+    p = _PARSE_INSTR + "【OCRテキスト】\n" + ocr_text + "\n\n" + _PARSE_SCHEMA
+    if strict:
+        p += "\n必ず { から } までの有効なJSONのみを出力。説明禁止。"
+    return p
+
+
+def ocr_then_parse(image_bytes: bytes):
+    """VLで素のOCR → テキストモデルで項目抽出。実物の複雑な決算短信に強い。"""
+    ocr_text, t_ocr = vl_extract(image_bytes, OCR_PROMPT)
+    parsed_json, t_parse = jp_generate(PARSE_SYSTEM, _parse_prompt(ocr_text))
+    try:
+        return parse_extraction(parsed_json), t_ocr + t_parse
+    except (ValueError, json.JSONDecodeError):
+        # 抽出側がJSONを崩したら、もう一度だけJSON厳守で再依頼
+        parsed2, t2 = jp_generate(PARSE_SYSTEM, _parse_prompt(ocr_text, strict=True))
+        return parse_extraction(parsed2), t_ocr + t_parse + t2
+
+
 @op()
 def extract_financials(image_bytes: bytes):
-    """決算書画像 → 構造化JSON。1度パースに失敗したら修復プロンプトで再試行する
-    （実機のVLは出力が揺れるため、1回のリトライで成功率を大きく上げる）。"""
+    """決算書画像 → 構造化JSON。EXTRACT_MODE=2stage なら OCR→テキスト抽出方式を使う。
+    既定(direct)は VL に直接スキーマ充填させ、パース失敗時は1回だけ修復リトライ。"""
+    if os.environ.get("EXTRACT_MODE", "direct").lower() == "2stage":
+        return ocr_then_parse(image_bytes)
+
     raw, latency = vl_extract(image_bytes, EXTRACT_PROMPT)
     try:
         return parse_extraction(raw), latency
