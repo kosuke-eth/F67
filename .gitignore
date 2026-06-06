@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 仮想環境
+.venv/
+venv/
+env/
+
+# 秘密・ローカル設定（.env.example はコミットする）
+.env
+
+# 生成物
+sample_statement.png
+eval_sample.png
+
+# モデル本体（GGUF）は巨大なのでコミットしない。download_models.py で取得する。
+models/
+*.gguf
+
+# ローカルの llama.cpp バイナリ（会場ではプリインストール）
+tools/
+
+# EDINET から取得した実データ（再取得可能なのでコミットしない）
+data/
+
+# OS
+.DS_Store
+Thumbs.db

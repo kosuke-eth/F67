@@ -7,9 +7,9 @@ import time
 import requests
 
 VL_BASE_URL = os.environ.get("VL_BASE_URL", "http://127.0.0.1:8080/v1")
-VL_MODEL = os.environ.get("VL_MODEL", "LFM2.5-VL-1.6B-Extract")
+VL_MODEL = os.environ.get("VL_MODEL", "LFM2.5-VL-1.6B")
 JP_BASE_URL = os.environ.get("JP_BASE_URL", "http://127.0.0.1:8081/v1")
-JP_MODEL = os.environ.get("JP_MODEL", "LFM2.5-1.2B-JP")
+JP_MODEL = os.environ.get("JP_MODEL", "LFM2.5-1.2B-JP-202606")
 
 
 def is_local_only() -> bool:

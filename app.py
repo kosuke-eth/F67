@@ -35,18 +35,26 @@ def _to_png_bytes(file_path: str) -> bytes:
 
 def run(file_path):
     if not file_path:
-        return "", "（決算書（画像/PDF）をアップロードしてください）", ""
+        return "", "（決算書（画像/PDF）をアップロードしてください）", "", ""
     img_bytes = _to_png_bytes(file_path)
 
     data, t_extract = extract_financials(img_bytes)
-    memo, t_summary, ratios = risk_summary(data)
+    memo, t_summary, ratios, grade, warnings = risk_summary(data)
 
     extracted = json.dumps({"抽出値": data, "算出指標": ratios},
                            ensure_ascii=False, indent=2)
+
+    # 暫定格付け＋整合性アラートのバッジ（決定的に算出＝監査可能）
+    badge = f"暫定格付け: {grade.get('格付け')}（{grade.get('スコア')}）"
+    if warnings:
+        badge += "\n⚠️ 整合性アラート:\n" + "\n".join(f"・{w}" for w in warnings)
+    else:
+        badge += "\n✅ 整合性: 特記事項なし"
+
     net = "🔒 通信: ローカルのみ（外部送信なし）" if is_local_only() else "⚠️ 外部エンドポイント設定中"
     perf = (f"{net}\n抽出 {t_extract:.2f}s ／ 所見生成 {t_summary:.2f}s ／ "
             f"合計 {t_extract + t_summary:.2f}s")
-    return extracted, memo, perf
+    return extracted, memo, perf, badge
 
 
 def load_sample():
@@ -67,12 +75,13 @@ with gr.Blocks(title="NeoBank AI — オンプレ融資稟議アシスタント"
             with gr.Row():
                 btn = gr.Button("稟議の下書きを作成", variant="primary")
                 sample_btn = gr.Button("サンプルで試す")
+            grade_out = gr.Textbox(label="暫定格付け / データ整合性（決定的算出）", lines=4)
             perf_out = gr.Textbox(label="オンデバイス性能 / 通信状況", lines=2)
         with gr.Column():
             memo_out = gr.Textbox(label="与信所見（下書き）", lines=16)
             json_out = gr.Code(label="抽出された財務データ", language="json")
 
-    btn.click(run, inputs=f, outputs=[json_out, memo_out, perf_out])
+    btn.click(run, inputs=f, outputs=[json_out, memo_out, perf_out, grade_out])
     sample_btn.click(load_sample, outputs=f)
 
 if __name__ == "__main__":

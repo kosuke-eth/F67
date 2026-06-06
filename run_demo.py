@@ -26,11 +26,18 @@ def main():
     for k, v in data.items():
         print(f"    {k}: {v}")
 
-    memo, t2, ratios = risk_summary(data)
+    memo, t2, ratios, grade, warnings = risk_summary(data)
     print(f"\n[2] 算出指標")
     for k, v in ratios.items():
         print(f"    {k}: {v}")
-    print(f"\n[3] 与信所見（{t2:.3f}s）\n")
+    print(f"\n[3] 暫定格付け: {grade.get('格付け')}（{grade.get('スコア')}）")
+    for r in grade.get("根拠", []):
+        print(f"    - {r}")
+    if warnings:
+        print("\n[!] 整合性アラート")
+        for w in warnings:
+            print(f"    - {w}")
+    print(f"\n[4] 与信所見（{t2:.3f}s）\n")
     print(memo)
     print("\n" + "=" * 64)
     print(f"合計レイテンシ: {t1 + t2:.3f}s")

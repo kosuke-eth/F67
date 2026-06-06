@@ -11,10 +11,18 @@ except Exception:
     _HAS_WEAVE = False
 
 
+def _weave_enabled() -> bool:
+    """明示的にONのときだけ weave を使う（init と同じゲート）。
+    未設定だとライブデモ中に「Traces will not be logged」の赤い警告が出るため、
+    フラグ無しでは weave.op() を一切適用しない。"""
+    return _HAS_WEAVE and bool(
+        os.environ.get("WANDB_API_KEY") or os.environ.get("ENABLE_WEAVE"))
+
+
 def op():
-    """関数デコレータ。weave があればトレース、無ければ素通し。"""
+    """関数デコレータ。weave が有効ならトレース、無ければ素通し。"""
     def deco(fn):
-        if _HAS_WEAVE:
+        if _weave_enabled():
             return weave.op()(fn)
         return fn
     return deco

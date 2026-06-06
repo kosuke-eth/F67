@@ -49,9 +49,12 @@ def _extract_payload(text):
 def _make_memo(payload):
     data = payload.get("抽出値", {})
     r = payload.get("算出指標", {})
+    grade = payload.get("暫定格付け", {})
+    alerts = payload.get("整合性アラート", [])
     eq = r.get("自己資本比率(%)")
     opm = r.get("営業利益率(%)")
     de = r.get("DEレシオ(倍)")
+    roe = r.get("ROE(%)")
     lines = [
         "■ 概況",
         f"{data.get('決算期', '当期')}は売上高{data.get('売上高')}百万円、"
@@ -61,12 +64,23 @@ def _make_memo(payload):
         "■ 主要な財務指標",
         f"・自己資本比率: {eq}%" if eq is not None else "・自己資本比率: 情報不足",
         f"・営業利益率: {opm}%" if opm is not None else "・営業利益率: 情報不足",
+        f"・ROE: {roe}%" if roe is not None else "・ROE: 情報不足",
         f"・DEレシオ: {de}倍" if de is not None else "・DEレシオ: 情報不足",
+        "",
+        "■ 暫定格付けの所見",
+        (f"暫定格付けは {grade.get('格付け')}（スコア {grade.get('スコア')}）。"
+         f"根拠: {' / '.join(grade.get('根拠', []))}。"
+         "本格付けは決定的に算出され、同一書類なら常に同一結果（監査で再現可能）。"
+         if grade.get("格付け") else "暫定格付け: 指標不足のため判定不能。"),
         "",
         "■ 注視すべきリスク",
         (f"1. 自己資本比率{eq}%とやや低位。下振れ耐性が限定的。" if eq is not None else "1. 自己資本比率を要確認。"),
         (f"2. DEレシオ{de}倍と有利子負債依存度が高い。金利上昇局面で負担増。" if de is not None else "2. 有利子負債水準を要確認。"),
         (f"3. 営業利益率{opm}%。同業比較での競争力を要検証。" if opm is not None else "3. 収益性を要確認。"),
+        "",
+        "■ データ整合性",
+        ("特記事項なし（会計整合性チェックを通過）。" if not alerts
+         else "次の不整合を検知。抽出値の再確認が必要:\n" + "\n".join(f"・{a}" for a in alerts)),
         "",
         "■ 追加で確認すべき資料",
         "・直近3期の推移、資金繰り表、主要取引先の与信状況、担保・保証の有無。",

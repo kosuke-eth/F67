@@ -14,13 +14,16 @@
 決算書（画像/PDF）
    │
    ▼
-[LFM2.5-VL-1.6B-Extract]  抽出専用VL。汎用VLより堅牢
+[LFM2.5-VL-1.6B]  日本語ビジョン対応VL。抽出専用プロンプトで拘束
    │  構造化JSON（売上・利益・総資産…）
    ▼
-[Python: 指標を決定的に算出]  自己資本比率・営業利益率・DEレシオ・ネット負債
+[Python: 整合性チェック]  純資産>総資産 等の抽出ミスを検知（監査の土台）
    │
    ▼
-[LFM2.5-1.2B-JP]  temperature=0  与信所見を日本語生成（決定性=監査で再現可能）
+[Python: 指標を決定的に算出]  自己資本比率・営業利益率・経常利益率・ROE・ROA・DEレシオ・ネット負債
+   │  ＋ 暫定格付け(A〜D) を3指標から決定的にスコア化
+   ▼
+[LFM2.5-1.2B-JP-202606]  temperature=0  与信所見を日本語生成（決定性=監査で再現可能）
    │
    ▼
 与信稟議の下書き  +  オンデバイス性能（レイテンシ / 通信ローカル表示）
@@ -61,8 +64,8 @@ python run_demo.py          # サンプル決算書で抽出→指標→所見�
 `llama.cpp + Vulkan`（プリインストール）でVLとJPを別ポートに立て、`.env` を向けるだけ。
 
 ```bash
-llama-server -m models/LFM2.5-VL-1.6B-Extract.gguf --port 8080 --host 127.0.0.1
-llama-server -m models/LFM2.5-1.2B-JP.gguf         --port 8081 --host 127.0.0.1
+llama-server -m models/LFM2.5-VL-1.6B.gguf            --port 8080 --host 127.0.0.1 --mmproj models/LFM2.5-VL-1.6B-mmproj.gguf
+llama-server -m models/LFM2.5-1.2B-JP-202606.gguf     --port 8081 --host 127.0.0.1
 python app.py
 ```
 
@@ -74,9 +77,10 @@ python app.py
 
 ## 動作確認済み
 
-- `pytest -q` → 5 件パス（指標計算・JSON正規化のロジック）
-- `python run_demo.py`（モックLFM）→ 抽出→指標→所見まで一気通貫で出力を確認
-  - 例: 自己資本比率 27.5% / 営業利益率 6.1% / DEレシオ 1.46倍 を決定的に算出
+- `pytest -q` → 9 件パス（指標計算・整合性チェック・格付け・JSON正規化のロジック）
+- `python run_demo.py`（モックLFM）→ 抽出→整合性→指標→格付け→所見まで一気通貫で出力を確認
+  - 例: 自己資本比率 27.5% / 営業利益率 6.1% / ROE 11.3% / DEレシオ 1.46倍 → 暫定格付け **B (3/6)** を決定的に算出
+- 抽出が壊れたJSONを返しても、修復プロンプトで1回自動リトライ（実機VLの揺れに耐性）
 - 画像・PDF どちらの入力も PNG 変換を確認
 
 ---
