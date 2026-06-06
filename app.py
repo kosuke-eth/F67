@@ -60,7 +60,7 @@ GRADE = {
 }
 ENGINE_MAP = {
     "Liquid VL · 1.6B": "liquid_vl",
-    "Qwen-7B · local": "qwen_vl",
+    "Custom OCR · local": "qwen_vl",
 }
 
 CSS = """
@@ -247,7 +247,7 @@ _NO_FIGURES = (
     "<div class='nb-card' style='border-color:#d97706;background:#fffbeb'>"
     "<div style='color:#b45309;font-weight:800'>⚠ No figures extracted</div>"
     "<div style='color:#92400e;font-size:13px;margin-top:4px'>This engine couldn't read the layout "
-    "(dense multi-column statement). Switch the engine to <b>Qwen-7B · local</b>, or try the sample "
+    "(dense multi-column statement). Switch the engine to <b>Custom OCR · local</b>, or try the sample "
     "/ a single-table statement.</div></div>")
 
 
@@ -440,7 +440,7 @@ with gr.Blocks(title="NeoBank AI — Credit Underwriting") as demo:
                 engine = gr.Radio(
                     choices=list(ENGINE_MAP.keys()), value="Liquid VL · 1.6B",
                     label="Extraction engine",
-                    info="Liquid VL = small & fast (simple docs). Qwen-7B = local, reads dense "
+                    info="Liquid VL = small & fast (simple docs). Custom OCR = local, reads dense "
                          "real 短信. Both on-device; analysis is always Liquid.")
                 btn = gr.Button("▶  Run analysis", variant="primary", size="lg")
             status_out = gr.HTML()
