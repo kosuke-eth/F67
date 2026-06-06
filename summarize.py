@@ -49,6 +49,30 @@ def compute_ratios(data: dict) -> dict:
         out["DEレシオ(倍)"] = round(debt / na, 2)
     if debt is not None and cash is not None:
         out["ネット有利子負債(百万円)"] = debt - cash
+
+    # --- 成長性（前期比）---
+    p_sales, p_op = g("前期売上高"), g("前期営業利益")
+    if ni is not None and sales:
+        out["当期純利益率(%)"] = round(100 * ni / sales, 1)
+    if sales is not None and p_sales:
+        out["売上高成長率(%)"] = round(100 * (sales - p_sales) / p_sales, 1)
+    if op_p is not None and p_op:
+        out["営業利益成長率(%)"] = round(100 * (op_p - p_op) / abs(p_op), 1)
+
+    # --- キャッシュフロー & 返済能力（与信の核心）---
+    ocf, icf = g("営業CF"), g("投資CF")
+    if ocf is not None and sales:
+        out["営業CFマージン(%)"] = round(100 * ocf / sales, 1)
+    if ocf is not None and icf is not None:
+        out["フリーCF(百万円)"] = ocf + icf          # 投資CFは通常マイナス
+    if debt is not None and ocf and ocf > 0:
+        out["債務償還年数(年)"] = round(debt / ocf, 1)  # 有利子負債 ÷ 営業CF
+    # 利益の質: 当期純利益が営業CFで裏付けられているか（1.0以上が健全）
+    if ocf is not None and ni and ni > 0:
+        out["営業CF対純利益(倍)"] = round(ocf / ni, 2)
+    # 借入余力の目安: 債務償還年数10年を上限としたときの追加借入可能額
+    if ocf is not None and ocf > 0:
+        out["借入余力目安(百万円)"] = int(round(ocf * 10 - (debt or 0)))
     return out
 
 

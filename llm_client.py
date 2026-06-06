@@ -47,3 +47,9 @@ def jp_generate(system, user):
     messages = [{"role": "system", "content": system},
                 {"role": "user", "content": user}]
     return _chat(JP_BASE_URL, JP_MODEL, messages, temperature=0.0)
+
+
+def jp_chat(messages, temperature=0.3, max_tokens=640):
+    """マルチターン会話（与信アシスタント）。Liquid の日本語モデルで端末内処理。"""
+    return _chat(JP_BASE_URL, JP_MODEL, messages, temperature=temperature,
+                 max_tokens=max_tokens)

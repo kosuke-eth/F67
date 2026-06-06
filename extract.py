@@ -13,6 +13,7 @@ from llm_client import vl_extract, jp_generate
 
 SCHEMA = {
     "決算期": "例: 2025年3月期",
+    "証券コード": "上場企業のコード番号（例: 7575）。無ければ null",
     "売上高": "百万円。整数。カンマ・単位なし",
     "営業利益": "百万円。整数",
     "経常利益": "百万円。整数",
@@ -21,6 +22,11 @@ SCHEMA = {
     "純資産": "百万円。整数",
     "有利子負債": "百万円。整数",
     "現預金": "百万円。整数",
+    "前期売上高": "前期（前年度）の売上高。百万円。整数",
+    "前期営業利益": "前期（前年度）の営業利益。百万円。整数",
+    "営業CF": "営業活動によるキャッシュフロー。百万円。整数（△やマイナスは負の値）",
+    "投資CF": "投資活動によるキャッシュフロー。百万円。整数（△やマイナスは負の値）",
+    "財務CF": "財務活動によるキャッシュフロー。百万円。整数（△やマイナスは負の値）",
 }
 
 EXTRACT_PROMPT = (
@@ -34,16 +40,24 @@ EXTRACT_PROMPT = (
     "スキーマ:\n" + json.dumps(SCHEMA, ensure_ascii=False, indent=2)
 )
 
-# 数値化したいキー（"1,234" や "1234百万円" を整数に正規化）
-_NUMERIC_KEYS = [k for k in SCHEMA if k != "決算期"]
+# 数値化したいキー（"1,234" や "1234百万円" を整数に正規化）。決算期・証券コードは文字列のまま。
+_NUMERIC_KEYS = [k for k in SCHEMA if k not in ("決算期", "証券コード")]
 
 
 def _coerce_int(v):
     if v is None or isinstance(v, (int, float)):
         return v
     s = str(v).replace(",", "").replace("百万円", "").replace("円", "").strip()
+    # 日本語の負号（△ ▲ ム）や記号付きマイナスを負値として扱う（CFはマイナスが頻出）
+    neg = False
+    for mark in ("△", "▲", "ム", "−", "-"):
+        if s.startswith(mark):
+            neg, s = True, s[len(mark):].strip()
+            break
+    s = s.replace("△", "").replace("▲", "").replace("ム", "").replace("−", "")
     try:
-        return int(float(s))
+        n = int(float(s))
+        return -n if neg else n
     except ValueError:
         return None
 
